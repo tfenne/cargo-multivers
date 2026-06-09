@@ -28,9 +28,10 @@ jobs:
       uses: docker/setup-qemu-action@v3
     - name: Install cross toolchain + x86 runtime libraries
       run: |
-        # The cross toolchain (arm64-hosted) is on the default mirror, but amd64
-        # runtime libs are not: the arm runner uses ports.ubuntu.com, which carries
-        # no amd64 packages. Add an amd64-only source pointing at archive.ubuntu.com.
+        # The arm runner's mirror (ports.ubuntu.com) carries no amd64 packages, so
+        # scope the existing sources to arm64 (otherwise apt 404s fetching amd64
+        # indexes there) and add an amd64-only source from archive.ubuntu.com.
+        sudo sed -i '/^Types:/a Architectures: arm64' /etc/apt/sources.list.d/ubuntu.sources
         sudo dpkg --add-architecture amd64
         printf 'Types: deb\nURIs: http://archive.ubuntu.com/ubuntu\nSuites: noble noble-updates\nComponents: main\nArchitectures: amd64\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' \
           | sudo tee /etc/apt/sources.list.d/amd64.sources
