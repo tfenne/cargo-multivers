@@ -1,0 +1,64 @@
+# Regression test for the fexecve-under-binfmt fix (issue #29).
+#
+# The bug only reproduces when a multivers launcher's in-memory variant is exec'd
+# through a kernel binfmt_misc interpreter (an emulator). This job runs on a GitHub
+# aarch64 Linux runner, where x86_64 is the *foreign* arch: a cross-built x86_64
+# multivers launcher is executed through binfmt_misc -> qemu-user, reproducing the
+# exact failure with a real launcher. Pre-fix the launcher exits 255; with the fix
+# it executes the selected variant and exits 0.
+name: emulation-test
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  x86-launcher-under-qemu:
+    name: x86_64 launcher under qemu (aarch64 host)
+    runs-on: ubuntu-24.04-arm
+    steps:
+    - uses: actions/checkout@v6
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: x86_64-unknown-linux-gnu
+    - uses: Swatinem/rust-cache@v2
+    - name: Register qemu binfmt handlers
+      uses: docker/setup-qemu-action@v3
+    - name: Install cross toolchain + x86 runtime libraries
+      run: |
+        sudo dpkg --add-architecture amd64
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          gcc-x86-64-linux-gnu libc6-dev-amd64-cross libc6:amd64 libgcc-s1:amd64
+    - name: Build an x86_64 multivers launcher from the fixture
+      env:
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: x86_64-linux-gnu-gcc
+      run: |
+        cargo install --path . --root "$RUNNER_TEMP/mv" --locked
+        "$RUNNER_TEMP/mv/bin/cargo-multivers" multivers \
+          --manifest-path tests/test-correct-build-used/Cargo.toml \
+          --target x86_64-unknown-linux-gnu \
+          --cpus x86-64,x86-64-v2,x86-64-v4 \
+          --out-dir "$RUNNER_TEMP/out"
+    - name: Show environment (debug)
+      run: |
+        bin="$RUNNER_TEMP/out/test-correct-build-used"
+        file "$bin" || true
+        echo "--- binfmt qemu-x86_64 registration ---"
+        cat /proc/sys/fs/binfmt_misc/qemu-x86_64 2>/dev/null || echo "(qemu-x86_64 not registered)"
+    - name: Run the launcher under emulation and assert it executed a variant
+      run: |
+        bin="$RUNNER_TEMP/out/test-correct-build-used"
+        grep -qa "anonymous memory file" "$bin" || { echo "::error::not a multivers launcher (variants deduplicated to one)"; exit 1; }
+        set +e
+        out=$("$bin"); rc=$?
+        set -e
+        echo "launcher exit=$rc stdout=[$out]"
+        if [ "$rc" -ne 0 ]; then
+          echo "::error::launcher failed under emulation (exit $rc) -- fexecve-under-binfmt regression"
+          exit 1
+        fi
+        [ -n "$out" ] || { echo "::error::launcher produced no output"; exit 1; }
+        echo "OK: launcher selected and executed a variant under qemu"
